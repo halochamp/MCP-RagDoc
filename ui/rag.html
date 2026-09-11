@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>MCP-RagDoc</title>
+  <style>
+    :root{color-scheme:dark;--bg:#0b0d12;--panel:#121722;--panel2:#171d29;--line:#283142;--text:#eef3fb;--muted:#98a4b8;--good:#49d17d;--warn:#f6c85f;--bad:#ff6b6b;--accent:#8ab4ff;--accent2:#b39cff}
+    *{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at 15% 0,#172036 0,transparent 34%),var(--bg);font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:var(--text)}
+    button,input,select{font:inherit}.shell{max-width:1500px;margin:auto;padding:22px}.top{display:flex;justify-content:space-between;align-items:center;gap:18px;margin-bottom:18px}.brand h1{font-size:24px;margin:0}.brand p{margin:4px 0 0;color:var(--muted)}.badges{display:flex;gap:8px;flex-wrap:wrap}.badge{padding:6px 10px;border:1px solid var(--line);border-radius:999px;background:#111827;color:#d7e2f5}.badge.good{border-color:#245b3d;color:#83eca7}
+    .grid{display:grid;grid-template-columns:minmax(0,1fr) 390px;gap:16px}.card{background:linear-gradient(180deg,rgba(24,30,43,.96),rgba(15,19,28,.96));border:1px solid var(--line);border-radius:16px;box-shadow:0 14px 40px rgba(0,0,0,.22)}.card h2{font-size:15px;margin:0}.head{display:flex;align-items:center;justify-content:space-between;padding:16px 18px;border-bottom:1px solid var(--line)}.body{padding:16px 18px}
+    .searchrow{display:grid;grid-template-columns:1fr 180px auto;gap:10px}.input,.select{width:100%;border:1px solid var(--line);background:#0d121c;color:var(--text);border-radius:10px;padding:11px 12px;outline:none}.input:focus,.select:focus{border-color:#557fcb;box-shadow:0 0 0 3px rgba(80,130,220,.12)}.btn{border:1px solid #3b5686;background:#1d3a66;color:#fff;border-radius:10px;padding:10px 14px;cursor:pointer}.btn:hover{filter:brightness(1.12)}.btn.secondary{background:#171f2e;border-color:var(--line)}.btn.danger{background:#55262b;border-color:#7d363f}.btn.small{padding:5px 8px;font-size:12px}.btn:disabled{opacity:.45;cursor:not-allowed}
+    .result{margin-top:14px;background:#0a0f17;border:1px solid var(--line);border-radius:12px;padding:14px;min-height:360px;max-height:72vh;overflow:auto;white-space:pre-wrap;word-break:break-word;font:13px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace}.sourceLink{border:0;background:transparent;color:var(--accent);padding:0;text-align:left;text-decoration:underline;cursor:pointer;font:inherit}.sourceLink:hover{color:#c8d9ff}.hint{color:var(--muted);font-size:12px;margin-top:8px}.muted{color:var(--muted)}.status{font-weight:700}.status.good{color:var(--good)}.status.warn{color:var(--warn)}.status.bad{color:var(--bad)}
+    .stats{display:grid;grid-template-columns:1fr 1fr;gap:10px}.stat{background:#0e141f;border:1px solid var(--line);border-radius:12px;padding:12px}.stat b{display:block;font-size:18px;margin-top:3px}.controls{display:flex;gap:8px;flex-wrap:wrap}.progressWrap{margin-top:14px}.progress{height:9px;background:#0b1018;border:1px solid var(--line);border-radius:99px;overflow:hidden}.progress>div{height:100%;width:0;background:linear-gradient(90deg,var(--accent),var(--accent2));transition:width .25s ease}.jobline{display:flex;justify-content:space-between;gap:10px;margin-top:8px;color:var(--muted);font-size:12px}.jobdetail{margin-top:8px;padding:9px 10px;border:1px solid var(--line);border-radius:9px;background:#0b1018;min-height:38px;white-space:pre-wrap;word-break:break-word;font:12px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace}
+    .section{margin-top:16px}.files{max-height:420px;overflow:auto;border:1px solid var(--line);border-radius:10px}.file{padding:10px;border-bottom:1px solid #202838}.file:last-child{border-bottom:0}.file:hover{background:#111926}.filetop{display:flex;align-items:flex-start;justify-content:space-between;gap:8px}.filetop b{font-size:13px;word-break:break-word}.path{margin-top:5px;color:#7f8ba0;font:11px ui-monospace,SFMono-Regular,Menlo,monospace;word-break:break-all}.meta{margin-top:5px;color:var(--muted);font-size:11px}.empty{color:var(--muted);padding:22px;text-align:center}.pathbox{margin-top:9px;padding:9px 10px;border:1px solid var(--line);border-radius:9px;background:#0b1018;color:#9eabc0;font:11px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace;word-break:break-all}
+    @media(max-width:950px){.grid{grid-template-columns:1fr}.searchrow{grid-template-columns:1fr}.shell{padding:12px}.top{align-items:flex-start;flex-direction:column}.result{max-height:60vh}}
+  </style>
+</head>
+<body>
+<div class="shell">
+  <div class="top">
+    <div class="brand"><h1>MCP-RagDoc</h1><p>Standalone deterministic document RAG console</p></div>
+    <div class="badges"><span class="badge good">Vision OCR rewrite · optional</span><span class="badge">FTS5 + MiniLM + RRF</span><span class="badge">Local only · 127.0.0.1</span></div>
+  </div>
+
+  <div class="grid">
+    <main class="card">
+      <div class="head"><h2>Search knowledge base</h2><span id="searchMeta" class="muted">พร้อมค้นหา</span></div>
+      <div class="body">
+        <div class="searchrow">
+          <input id="q" class="input" placeholder="ค้นหาเนื้อหา ชื่อไฟล์ หรือคำใน PDF…" autocomplete="off">
+          <select id="mode" class="select"><option value="hybrid">Hybrid search</option></select>
+          <button id="searchBtn" class="btn">Search</button>
+        </div>
+        <div class="hint">กดที่บรรทัด [source: …] หรือปุ่มเปิดไฟล์เพื่อเปิดเอกสารต้นฉบับได้ทันที</div>
+        <pre id="result" class="result">พิมพ์คำค้นแล้วกด Search</pre>
+      </div>
+    </main>
+
+    <aside>
+      <section class="card">
+        <div class="head"><h2>RAG status</h2><span id="healthLabel" class="status warn">checking…</span></div>
+        <div class="body">
+          <div class="stats">
+            <div class="stat"><span class="muted">Source files</span><b id="sourceFiles">—</b></div>
+            <div class="stat"><span class="muted">Documents</span><b id="documents">—</b></div>
+            <div class="stat"><span class="muted">Chunks</span><b id="chunks">—</b></div>
+            <div class="stat"><span class="muted">Semantic</span><b id="semantic">—</b></div>
+            <div class="stat"><span class="muted">Vectors</span><b id="vectors">—</b></div>
+            <div class="stat"><span class="muted">Generation</span><b id="generation">—</b></div>
+          </div>
+          <div id="knowledgePath" class="pathbox"></div>
+          <div id="dbPath" class="pathbox"></div>
+        </div>
+      </section>
+
+      <section class="card section">
+        <div class="head"><h2>Build / Sync</h2><span class="muted">deterministic</span></div>
+        <div class="body">
+          <div class="controls">
+            <button id="syncBtn" class="btn">Sync KB</button>
+            <button id="cancelBtn" class="btn danger" disabled>Cancel Sync</button>
+          </div>
+          <div class="hint">อ่านไฟล์แบบ read-only และเขียนเฉพาะ SQLite/semantic state ใน private data directory</div>
+          <div class="progressWrap">
+            <div class="progress"><div id="bar"></div></div>
+            <div class="jobline"><span id="phase">idle</span><span id="pct">0%</span></div>
+            <div id="jobdetail" class="jobdetail muted">ไม่มี sync job กำลังทำงาน</div>
+          </div>
+        </div>
+      </section>
+
+      <section class="card section">
+        <div class="head"><h2>Indexed files</h2><button id="refreshBtn" class="btn secondary">Refresh</button></div>
+        <div class="body">
+          <div class="searchrow" style="grid-template-columns:1fr auto;margin-bottom:10px">
+            <input id="fileQuery" class="input" placeholder="กรองชื่อไฟล์หรือ path…" autocomplete="off">
+            <button id="fileSearchBtn" class="btn secondary">Filter</button>
+          </div>
+          <div id="fileCount" class="muted" style="margin-bottom:8px">—</div>
+          <div id="files" class="files"><div class="empty">กำลังโหลด…</div></div>
+        </div>
+      </section>
+    </aside>
+  </div>
+</div>
+<script>
+const $=id=>document.getElementById(id);let activeJob=null,pollTimer=null;
+function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+function fmtBytes(n){n=Number(n||0);if(n<1024)return `${n} B`;if(n<1024*1024)return `${(n/1024).toFixed(1)} KB`;if(n<1024*1024*1024)return `${(n/1024/1024).toFixed(1)} MB`;return `${(n/1024/1024/1024).toFixed(1)} GB`}
+async function jfetch(url,opt={}){const r=await fetch(url,opt);let d={};try{d=await r.json()}catch{}if(!r.ok)throw new Error(d.detail||`HTTP ${r.status}`);return d}
+function syncControls(job=null){const busy=!!job;$('syncBtn').disabled=busy;$('cancelBtn').disabled=!busy||String(job?.status||'').toLowerCase()==='cancelling'}
+function setHealth(d){$('sourceFiles').textContent=d.source_files??'—';$('documents').textContent=d.documents??'—';$('chunks').textContent=d.chunks??'—';$('semantic').textContent=d.semantic??'—';$('vectors').textContent=d.semantic_vectors??'—';$('generation').textContent=d.semantic_generation??'—';$('knowledgePath').textContent=`Source: ${d.knowledge_dir||'—'}`;$('dbPath').textContent=`Index: ${d.index_db||'—'}`;const h=$('healthLabel');h.textContent=d.status||'unknown';h.className='status '+(d.status==='healthy'?'good':d.status==='degraded'?'warn':'bad');const job=d.sync_job&&d.sync_job.job_id?d.sync_job:null;if(job){const wasIdle=!activeJob;activeJob=job.job_id;syncControls(job);if(wasIdle)pollJob()}else if(!activeJob)syncControls(null)}
+async function health(){try{setHealth(await jfetch('/api/health'))}catch(e){const h=$('healthLabel');h.textContent='error';h.className='status bad'}}
+async function openSource(path,btn){try{await jfetch('/api/open-file',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path})});const old=btn.textContent;btn.textContent='✓ Finder';setTimeout(()=>btn.textContent=old,1200)}catch(e){const old=btn.textContent;btn.textContent='เปิดไม่ได้';setTimeout(()=>btn.textContent=old,1600)}}
+function wireOpenButtons(root){root.querySelectorAll('.openBtn,.sourceLink').forEach(btn=>btn.onclick=()=>openSource(btn.dataset.path||'',btn))}
+function trimSourcePath(value){return String(value??'').trim().replace(/^\[?\s*source:\s*/i,'').replace(/\]\s*$/,'').trim().replace(/[`*]+$/,'').replace(/[\]\),.;:!?]+$/,'').trim()}
+function renderSearchResult(raw){return String(raw??'').split('\n').map(line=>{const match=line.match(/^(\s*)\[source:\s*(.*)\]$/i);if(!match)return esc(line);const path=trimSourcePath(match[2]);return `${esc(match[1])}<button class="sourceLink" data-path="${esc(path)}">[source: ${esc(path)}]</button>`}).join('\n')}
+function renderFiles(rows,total,truncated){$('fileCount').textContent=`${total??rows.length} files${truncated?' · list truncated':''}`;$('files').innerHTML=rows.length?rows.map((f,i)=>`<div class="file"><div class="filetop"><b>${esc(f.relative_path||f.name)}</b><span class="controls"><button class="btn secondary small openBtn" data-path="${esc(f.path)}">เปิดใน Finder</button><button class="btn secondary small copyBtn" data-path="${esc(f.path)}">Copy path</button></span></div><div class="path">${esc(f.path)}</div><div class="meta">${esc(f.kind)} · ${fmtBytes(f.size_bytes)} · ${Number(f.chunks||0)} chunks</div></div>`).join(''):'<div class="empty">ยังไม่มีไฟล์ที่ indexed</div>';$('files').querySelectorAll('.copyBtn').forEach(btn=>btn.onclick=async()=>{const path=btn.dataset.path||'';try{await navigator.clipboard.writeText(path);btn.textContent='Copied'}catch{btn.textContent='Copy failed'}setTimeout(()=>btn.textContent='Copy path',1200)});wireOpenButtons($('files'))}
+async function files(){try{const d=await jfetch('/api/files?limit=200&query='+encodeURIComponent($('fileQuery').value.trim()));renderFiles(d.files||[],d.total,d.truncated)}catch(e){$('files').innerHTML='<div class="empty">โหลดรายการไม่สำเร็จ</div>'}}
+async function search(){const q=$('q').value.trim();if(!q)return;$('searchBtn').disabled=true;$('searchMeta').textContent='กำลังค้นหา…';$('result').textContent='Searching…';try{const d=await jfetch('/api/search',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({query:q,mode:$('mode').value})});$('result').innerHTML=renderSearchResult(d.result);wireOpenButtons($('result'));$('searchMeta').textContent='เสร็จ · ไม่เรียก LLM ระหว่างค้นหา'}catch(e){$('result').textContent='[error] '+e.message;$('searchMeta').textContent='เกิดข้อผิดพลาด'}finally{$('searchBtn').disabled=false}}
+async function startSync(){if(activeJob)return;try{const d=await jfetch('/api/sync',{method:'POST'});activeJob=d.job.job_id||null;if(!activeJob)throw new Error(d.raw||'ไม่พบ job_id');$('jobdetail').textContent=d.raw;syncControls(d.job||{status:'running'});pollJob()}catch(e){$('jobdetail').textContent='[error] '+e.message}}
+async function pollJob(){if(!activeJob)return;clearTimeout(pollTimer);try{const d=await jfetch('/api/jobs/'+encodeURIComponent(activeJob)),j=d.job||{};const p=Math.max(0,Math.min(100,Number(j.progress_percent||0)));$('bar').style.width=p+'%';$('pct').textContent=p.toFixed(1)+'%';$('phase').textContent=j.phase||j.status||'running';$('jobdetail').textContent=d.raw;const terminal=['done','cancelled','error','not_found'].includes(j.status);if(terminal){activeJob=null;syncControls(null);await Promise.all([health(),files()]);return}syncControls(j)}catch(e){$('jobdetail').textContent='[error] '+e.message}pollTimer=setTimeout(pollJob,700)}
+async function cancel(){if(!activeJob)return;try{const d=await jfetch('/api/jobs/'+encodeURIComponent(activeJob)+'/cancel',{method:'POST'});$('jobdetail').textContent=d.raw;syncControls(d.job||{status:'cancelling'})}catch(e){$('jobdetail').textContent='[error] '+e.message}}
+$('searchBtn').onclick=search;$('q').addEventListener('keydown',e=>{if(e.key==='Enter')search()});$('syncBtn').onclick=startSync;$('cancelBtn').onclick=cancel;$('refreshBtn').onclick=()=>Promise.all([health(),files()]);$('fileSearchBtn').onclick=files;$('fileQuery').addEventListener('keydown',e=>{if(e.key==='Enter')files()});Promise.all([health(),files()]);setInterval(health,5000);
+</script>
+</body>
+</html>

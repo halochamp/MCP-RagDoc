@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+.env
+.DS_Store
+*.log
+*.tmp
+helpers/vision_ocr_macos
+rag_document/*
+!rag_document/.gitkeep
+.mcp-ragdoc/
