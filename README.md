@@ -8,17 +8,17 @@ before writing SQLite. MCP-RagDoc owns its client and configuration and imports 
 
 ## MCP tools
 
+The public stdio catalog is intentionally small:
+
 - `rag_search(query)` — filename + FTS5/BM25 + OCR fuzzy + optional MiniLM
   semantic retrieval, fused deterministically with RRF.
-- `sync_kb()` — start an incremental background rebuild and return a persistent
-  `job_id` immediately.
-- `sync_status(job_id)` — poll phase, percentage, current file, completed/total
-  files, ETA, and semantic parent progress across MCP process restarts.
-- `cancel_sync(job_id)` — request cooperative cancellation at safe checkpoints;
-  the current document transaction rolls back and an incomplete semantic
-  generation is never published ready.
-- `rag_health()` — report source/index/semantic readiness without reading full
-  document bodies.
+- `rag_manage(action, job_id="")` — `action=sync|cancel` starts an incremental
+  background rebuild or requests cooperative cancellation.
+- `rag_status(view="health", job_id="")` — `view=health|job` reports
+  source/index/semantic readiness or one persistent sync job's progress.
+
+Sync cancellation semantics are unchanged: the current document transaction
+rolls back and an incomplete semantic generation is never published ready.
 
 ## Standalone layout
 
@@ -67,7 +67,7 @@ Any MCP client can launch this server with its own source and private-state path
 
 ## Sync jobs and cancellation
 
-MCP `sync_kb()` is non-blocking. It launches a detached worker, persists job
+MCP `rag_manage(action="sync")` is non-blocking. It launches a detached worker, persists job
 state under the private `DATA_DIR/sync_jobs/`, and returns a `job_id`. This
 persists across short-lived stdio MCP sessions, so clients that open a fresh MCP
 process for each tool call can still poll or cancel the same job.
@@ -81,7 +81,7 @@ transaction rolls back, and a cancelled semantic generation stays `ready=0`.
 
 Host integrations that deliberately need the historical blocking callback API
 may call the Python service function `sync_kb_blocking(...)`; that function is
-not exposed as the MCP `sync_kb` tool.
+not exposed as a public MCP tool.
 
 ## Standalone HTML UI
 
@@ -198,7 +198,7 @@ heavier reranker.
 
 ## Safety/lifecycle invariants
 
-- source documents are never modified by `sync_kb` or `rag_search`;
+- source documents are never modified by `rag_manage(action="sync")` or `rag_search`;
 - SQLite/state writes stay in the operator-selected private state/database;
 - symlinks, hidden source files, sensitive-looking paths/content, stale source
   rows, and paths outside the configured source root fail closed;

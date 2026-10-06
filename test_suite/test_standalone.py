@@ -133,20 +133,35 @@ def test_missing_source_directory_is_empty_not_created(tmp_path, monkeypatch):
     assert not missing.exists()
 
 
-def test_fastmcp_surface_is_exactly_five_tools(monkeypatch, tmp_path):
+def test_fastmcp_surface_is_exactly_three_action_based_tools(monkeypatch, tmp_path):
     _configure_instance(tmp_path, monkeypatch)
     import rag_server
 
-    manager = getattr(rag_server.mcp, "_tool_manager", None)
-    if manager is None or not hasattr(manager, "list_tools"):
-        pytest.skip("FastMCP tool manager API unavailable")
-    tools = manager.list_tools()
-    if hasattr(tools, "__await__"):
-        import asyncio
-        tools = asyncio.run(tools)
-    assert {tool.name for tool in tools} == {
-        "rag_search", "sync_kb", "sync_status", "cancel_sync", "rag_health"
-    }
+    import asyncio
+    tools = asyncio.run(rag_server.mcp.list_tools())
+    by_name = {tool.name: tool for tool in tools}
+    assert set(by_name) == {"rag_search", "rag_manage", "rag_status"}
+    assert by_name["rag_search"].inputSchema["required"] == ["query"]
+    assert by_name["rag_manage"].inputSchema["required"] == ["action"]
+    assert by_name["rag_manage"].inputSchema["properties"]["action"]["enum"] == ["sync", "cancel"]
+    assert by_name["rag_status"].inputSchema.get("required", []) == []
+    assert by_name["rag_status"].inputSchema["properties"]["view"]["enum"] == ["health", "job"]
+
+
+
+def test_action_tools_route_to_existing_service_contracts(monkeypatch, tmp_path):
+    _configure_instance(tmp_path, monkeypatch)
+    import rag_server
+
+    monkeypatch.setattr(rag_server, "sync_kb", lambda: "SYNC")
+    monkeypatch.setattr(rag_server, "cancel_sync", lambda job_id: f"CANCEL:{job_id}")
+    monkeypatch.setattr(rag_server, "rag_health", lambda: "HEALTH")
+    monkeypatch.setattr(rag_server, "sync_status", lambda job_id: f"JOB:{job_id}")
+
+    assert rag_server.rag_manage("sync") == "SYNC"
+    assert rag_server.rag_manage("cancel", "sync-abc") == "CANCEL:sync-abc"
+    assert rag_server.rag_status() == "HEALTH"
+    assert rag_server.rag_status("job", "sync-abc") == "JOB:sync-abc"
 
 
 def _job_id(text: str) -> str:
@@ -269,3 +284,35 @@ def test_cancel_mid_document_rolls_back_current_file(tmp_path, monkeypatch):
             (str(source.resolve()),),
         ).fetchall()
     assert content == [("last good searchable snapshot",)]
+
+
+def test_fastmcp_dispatch_rejects_legacy_tools_and_validates_actions(monkeypatch, tmp_path):
+    _configure_instance(tmp_path, monkeypatch)
+    import asyncio
+    import rag_server
+    routes = [
+        ("rag_manage", {"action": "sync"}, "sync_kb"),
+        ("rag_manage", {"action": "cancel", "job_id": "sync-abc"}, "cancel_sync"),
+        ("rag_status", {"view": "health"}, "rag_health"),
+        ("rag_status", {"view": "job", "job_id": "sync-abc"}, "sync_status"),
+    ]
+    for name, args, helper in routes:
+        with monkeypatch.context() as patch:
+            patch.setattr(rag_server, helper, lambda *a, **kw: "ROUTE_OK")
+            assert "ROUTE_OK" in str(asyncio.run(rag_server.mcp.call_tool(name, args)))
+    rejected = [(name, {}) for name in ("sync_kb", "sync_status", "cancel_sync", "rag_health")] + [
+        ("rag_manage", {"action": "unknown"}), ("rag_manage", {}),
+        ("rag_status", {"view": "unknown"}), ("rag_search", {}),
+    ]
+    for name, args in rejected:
+        with pytest.raises(Exception, match="Unknown tool|validation error"):
+            asyncio.run(rag_server.mcp.call_tool(name, args))
+
+
+def test_job_follow_up_uses_consolidated_status_tool():
+    import rag_service
+    state = {"status": "running", "job_id": "sync-abc"}
+    text = rag_service._format_job(state)
+    assert "next=rag_status(view=job, job_id=sync-abc)" in text
+    assert "cancel=rag_manage(action=cancel, job_id=sync-abc)" in text
+    assert "next=" not in rag_service._format_job({**state, "status": "done"})

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import os
+from typing import Literal
 
 
 def _apply_launch_configuration() -> None:
@@ -45,10 +46,13 @@ mcp = FastMCP(
         "the retrieval path itself never calls an LLM. "
         "Search is permanently scoped to the knowledge directory selected by "
         "the server operator. Use rag_search for filename/content/semantic lookup. "
-        "sync_kb starts a background refresh and returns a job id; poll sync_status "
-        "for progress or call cancel_sync to request cooperative cancellation."
+        "Use rag_manage for sync/cancel actions and rag_status for health/job status."
     ),
 )
+
+
+ManageAction = Literal["sync", "cancel"]
+StatusView = Literal["health", "job"]
 
 
 @mcp.tool()
@@ -62,33 +66,61 @@ def rag_search(query: str) -> str:
     return rag_service.search(query)
 
 
-@mcp.tool()
 def sync_kb() -> str:
     """Start a background refresh of the private lexical/semantic index.
 
     Returns immediately with a job_id. Source documents are read-only; writes
-    stay inside MCP-RagDoc's private state. Poll sync_status(job_id) while the
-    job runs, or call cancel_sync(job_id) to stop at a safe checkpoint.
+    stay inside MCP-RagDoc's private state. Public MCP callers poll through
+    rag_status(view="job") and cancel through rag_manage(action="cancel").
     """
     return rag_service.start_sync()
 
 
-@mcp.tool()
 def sync_status(job_id: str) -> str:
     """Return phase, progress, current file and ETA for one sync job."""
     return rag_service.sync_status(job_id)
 
 
-@mcp.tool()
 def cancel_sync(job_id: str) -> str:
     """Request cooperative cancellation of a queued/running sync job."""
     return rag_service.cancel_sync(job_id)
 
 
-@mcp.tool()
 def rag_health() -> str:
     """Report source/index/semantic readiness for this MCP-RagDoc instance."""
     return rag_service.health()
+
+
+@mcp.tool()
+def rag_manage(action: ManageAction, job_id: str = "") -> str:
+    """Manage the persistent sync lifecycle.
+
+    action choices:
+    - sync: start an incremental background refresh and return a job id
+    - cancel: request cooperative cancellation for job_id
+    """
+    action = str(action).strip().casefold()
+    if action == "sync":
+        return sync_kb()
+    if action == "cancel":
+        return cancel_sync(job_id)
+    raise ValueError("unsupported action")
+
+
+@mcp.tool()
+def rag_status(view: StatusView = "health", job_id: str = "") -> str:
+    """Read health or one persistent sync-job status through one tool.
+
+    view choices:
+    - health: source/index/semantic readiness
+    - job: phase/progress/current file/ETA for job_id
+    """
+    view = str(view or "health").strip().casefold()
+    if view == "health":
+        return rag_health()
+    if view == "job":
+        return sync_status(job_id)
+    raise ValueError("unsupported view")
 
 
 if __name__ == "__main__":

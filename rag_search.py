@@ -223,9 +223,9 @@ def _fallback_filename_search(
         if reason == "no_index":
             return (
                 "[error] ยังไม่มี Knowledge Base index และค้นใน rag_document/ ไม่พบผล — "
-                "ใช้ /sync_kb เพื่อสร้างหรืออัปเดตฐานความรู้"
+                "ใช้ rag_manage(action='sync') เพื่อสร้างหรืออัปเดตฐานความรู้"
             )
-        return f"ไม่พบไฟล์ที่ตรงกับ '{query}' ใน Knowledge Base (ลอง /sync_kb หากเอกสารเพิ่งเปลี่ยน)"
+        return f"ไม่พบไฟล์ที่ตรงกับ '{query}' ใน Knowledge Base (ลอง rag_manage(action='sync') หากเอกสารเพิ่งเปลี่ยน)"
     suffix = "\n[หยุดหลัง 4 วินาที/50 ผล]" if time.monotonic() >= deadline or len(matches) >= 50 else ""
     header = "[knowledge filename fallback — ยังไม่มี RAG index]" if reason == "no_index" \
         else "[ขยายผลการค้นหา — ไม่พบใน index แต่พบไฟล์ชื่อใกล้เคียง]"
@@ -764,7 +764,7 @@ def _run_chunk_search(
     )
     if not fallback.startswith("ไม่พบไฟล์"):
         return fallback
-    return f"ไม่พบเนื้อหาที่ตรงกับ '{query}' ใน Knowledge Base (ลอง /sync_kb หาก rag_document เพิ่งเปลี่ยน)"
+    return f"ไม่พบเนื้อหาที่ตรงกับ '{query}' ใน Knowledge Base (ลอง rag_manage(action='sync') หาก rag_document เพิ่งเปลี่ยน)"
 
 def run(args: dict[str, str]) -> str:
     query = (args.get("query") or "").strip()
@@ -787,7 +787,7 @@ def run(args: dict[str, str]) -> str:
         return "[error] query ว่างเปล่าหลัง sanitize"
     split_match_query = _english_split_match_query(query)
 
-    db_error_prefix = "[error] Knowledge Base index เสียหายหรืออ่านไม่ได้ — รัน /sync_kb เพื่อสร้างดัชนีใหม่"
+    db_error_prefix = "[error] Knowledge Base index เสียหายหรืออ่านไม่ได้ — รัน rag_manage(action='sync') เพื่อสร้างดัชนีใหม่"
     try:
         conn = sqlite3.connect(str(config.FILE_INDEX_DB))
     except sqlite3.DatabaseError as e:
@@ -817,7 +817,7 @@ def run(args: dict[str, str]) -> str:
             conn.close()
     if has_kb_metadata:
         conn.close()
-        return "[error] Knowledge Base index เป็น schema รุ่นเก่า — รัน /sync_kb เพื่อ migrate ก่อนค้นหา"
+        return "[error] Knowledge Base index เป็น schema รุ่นเก่า — รัน rag_manage(action='sync') เพื่อ migrate ก่อนค้นหา"
 
     # Legacy /index path: one compact FTS row per file.
     if len(_query_terms(query)) == 1:

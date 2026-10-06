@@ -312,8 +312,8 @@ def _format_job(state: dict[str, object], *, prefix: str | None = None) -> str:
     ]
     if status in {"started", "already_running", "queued", "running", "cancelling"}:
         job_id = state.get("job_id") or ""
-        lines.append(f"next=sync_status(job_id={job_id})")
-        lines.append(f"cancel=cancel_sync(job_id={job_id})")
+        lines.append(f"next=rag_status(view=job, job_id={job_id})")
+        lines.append(f"cancel=rag_manage(action=cancel, job_id={job_id})")
     if state.get("summary"):
         lines += ["result:", str(state["summary"])]
     if state.get("error"):
