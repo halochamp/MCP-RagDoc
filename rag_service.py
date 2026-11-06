@@ -269,6 +269,15 @@ def _process_alive(pid: object) -> bool:
         return False
     if value <= 0:
         return False
+    # kill(pid, 0) also succeeds for zombies. Reap our own exited workers
+    # before treating the persisted PID as an active job; fresh stdio readers
+    # are not their parent and simply continue to the normal existence check.
+    try:
+        exited, _status = os.waitpid(value, os.WNOHANG)
+        if exited == value:
+            return False
+    except ChildProcessError:
+        pass
     try:
         os.kill(value, 0)
     except (ProcessLookupError, ValueError):
@@ -295,12 +304,44 @@ def _effective_job_state(state: dict[str, object], cancel_file: Path | None = No
     return view
 
 
+def _describe_activity(state: dict[str, object]) -> str:
+    """One human-readable line: which stage, how far, and what it is doing now."""
+    phase = str(state.get("phase") or "")
+    done = int(state.get("completed_files") or 0)
+    total = int(state.get("total_files") or 0)
+    parents = int(state.get("semantic_processed_parents") or 0)
+    parents_total = int(state.get("semantic_total_parents") or 0)
+    eta = float(state.get("estimated_remaining_seconds") or 0)
+    current = Path(str(state.get("current_file") or "")).name
+    eta_text = f" · ETA {eta:.0f}s" if eta >= 1 else ""
+    if phase in {"", "queued", "starting"}:
+        text = "รอเริ่มงาน"
+    elif phase in {"prepare", "prepared"}:
+        text = "ช่วง 1/2 lexical: สแกนและเตรียมรายการไฟล์ต้นทาง"
+    elif phase in {"file", "result"}:
+        text = f"ช่วง 1/2 lexical: อ่าน/OCR/ทำดัชนีไฟล์ {done}/{total}{eta_text}"
+    elif phase == "cleanup":
+        text = "ช่วง 1/2 lexical: ล้างรายการไฟล์ที่ถูกลบออกจากดัชนี"
+    elif phase == "semantic" and (parents_total <= 0 or parents <= 0):
+        text = "ช่วง 2/2 semantic: โหลดโมเดลและสแกน chunks ที่ต้อง embed"
+    elif phase == "semantic":
+        text = f"ช่วง 2/2 semantic: embed {parents}/{parents_total} parents{eta_text}"
+    elif phase == "done":
+        text = "เสร็จสิ้น"
+    else:
+        text = phase
+    if current and phase != "done":
+        text += f" · {current}"
+    return text
+
+
 def _format_job(state: dict[str, object], *, prefix: str | None = None) -> str:
     status = prefix or str(state.get("status") or "unknown")
     lines = [
         f"status={status}",
         f"job_id={state.get('job_id') or ''}",
         f"phase={state.get('phase') or ''}",
+        f"activity={_describe_activity(state)}",
         f"progress_percent={float(state.get('progress_percent') or 0):.1f}",
         f"completed_files={int(state.get('completed_files') or 0)}",
         f"total_files={int(state.get('total_files') or 0)}",
@@ -361,6 +402,8 @@ def _worker_environment() -> dict[str, str]:
         "RAGDOC_SEMANTIC_EMBED_BATCH": str(config.SEMANTIC_EMBED_BATCH),
         "RAGDOC_SEMANTIC_SCAN_BATCH": str(config.SEMANTIC_SCAN_BATCH),
         "RAGDOC_SEMANTIC_CANDIDATES": str(config.SEMANTIC_CANDIDATES),
+        "RAGDOC_SEMANTIC_FULL_SCAN_LIMIT": str(config.SEMANTIC_FULL_SCAN_LIMIT),
+        "RAGDOC_SEMANTIC_ANN_CANDIDATES": str(config.SEMANTIC_ANN_CANDIDATES),
         "RAGDOC_SEMANTIC_TIMEOUT": str(config.SEMANTIC_TIMEOUT_SECONDS),
         "RAGDOC_SEMANTIC_SYNC_TIMEOUT": str(config.SEMANTIC_SYNC_TIMEOUT_SECONDS),
         "PYTHONDONTWRITEBYTECODE": "1",
@@ -446,7 +489,7 @@ def start_sync() -> str:
             state = _new_job_state(job_id)
             _write_job(status_file, state)
             try:
-                subprocess.Popen(
+                process = subprocess.Popen(
                     [
                         sys.executable,
                         str(_WORKER),
@@ -462,6 +505,11 @@ def start_sync() -> str:
                     close_fds=True,
                     start_new_session=True,
                 )
+                # Publish the actual child identity before releasing the
+                # startup lock. Slow imports must not expire the pid=0 grace.
+                state["pid"] = process.pid
+                state["updated_at"] = time.time()
+                _write_job(status_file, state)
             except OSError:
                 state.update({
                     "status": "error",
@@ -513,8 +561,15 @@ def cancel_sync(job_id: object) -> str:
 
 def run_persistent_job(job_id: str, status_file: Path, cancel_file: Path) -> int:
     """Worker-process entry point. Returns a conventional process exit code."""
-    state = _read_job(status_file) or _new_job_state(job_id)
-    state["pid"] = os.getpid()
+    # Parent publishes the PID under this same lock; wait before reading or
+    # writing progress so parent cannot overwrite a fast worker's terminal state.
+    with _start_lock_path().open("a+") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        try:
+            state = _read_job(status_file) or _new_job_state(job_id)
+            state["pid"] = os.getpid()
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
 
     def cancelled() -> bool:
         return cancel_file.exists()

@@ -140,10 +140,18 @@ Lexical retrieval remains the always-available base:
 Optional semantic retrieval uses
 `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2`, the official
 ARM64 ONNX INT8 artifact, direct SentencePiece, 384-dimensional normalized
-float16 vectors, streaming exact cosine, and RRF fusion. Semantic children are
-word-boundary aware, capped at 112 content tokens with up to 24 tokens overlap.
-The semantic process exits after each build/query so its ML runtime does not
-remain resident in the MCP server.
+float16 vectors, and RRF fusion. Semantic children are word-boundary aware,
+capped at 112 content tokens with up to 24 tokens overlap. Up to 20,000 vectors
+(default, configurable with `RAGDOC_SEMANTIC_FULL_SCAN_LIMIT`) use streaming
+exact cosine. Larger ready generations use a rebuildable local HNSW sidecar;
+ANN adaptively overfetches child neighbors until it has enough unique parent
+candidates, then RagDoc reloads all children of those parents from SQLite and
+exact-reranks them before RRF, preserving the existing max-child-to-parent
+scoring contract. A small `state.json` publication marker lets health/readiness
+checks detect a missing, stale, or incomplete required sidecar without loading
+the large ANN mapping. SQLite remains the source of truth and ANN failure never
+breaks lexical search. The semantic process exits after each build/query so its
+ML runtime does not remain resident in the MCP server.
 
 The model is never downloaded by a search request. MCP-RagDoc auto-discovers a
 compatible snapshot in the Hugging Face cache, or the operator can pass:

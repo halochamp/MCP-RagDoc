@@ -10,6 +10,7 @@ its whole extracted body held in memory at once (PLAN.md §9.1).
 from __future__ import annotations
 
 import shutil
+import posixpath
 import subprocess
 import tempfile
 import xml.etree.ElementTree as ET
@@ -465,7 +466,30 @@ def _iter_pptx_units(path: Path) -> Iterator[str]:
             number_text = name[len(prefix) : -len(suffix)]
             if number_text.isdigit():
                 slides.append((int(number_text), name))
-        for number, member in sorted(slides):
+        ordered = [member for _number, member in sorted(slides)]
+        if "ppt/presentation.xml" in package.namelist():
+            try:
+                presentation = ET.fromstring(package.read("ppt/presentation.xml"))
+                relationships = ET.fromstring(package.read("ppt/_rels/presentation.xml.rels"))
+                targets = {
+                    item.attrib["Id"]: item.attrib["Target"]
+                    for item in relationships
+                    if item.tag.rsplit("}", 1)[-1] == "Relationship"
+                    and item.attrib.get("TargetMode") != "External"
+                }
+                ordered = []
+                members = set(package.namelist())
+                for slide in presentation.iter():
+                    if slide.tag.rsplit("}", 1)[-1] != "sldId":
+                        continue
+                    target = targets[slide.attrib["{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id"]]
+                    member = posixpath.normpath(target.lstrip("/") if target.startswith("/") else "ppt/" + target)
+                    if not member.startswith("ppt/slides/") or member not in members:
+                        raise ValueError("invalid presentation slide target")
+                    ordered.append(member)
+            except (KeyError, ET.ParseError, ValueError) as exc:
+                raise RuntimeError("invalid PowerPoint presentation relationships") from exc
+        for number, member in enumerate(ordered, 1):
             yield f"--- Slide {number} ---"
             try:
                 stream = package.open(member)
@@ -532,7 +556,7 @@ def _iter_odf_content_units(path: Path) -> Iterator[str]:
         with zipfile.ZipFile(path) as package, package.open("content.xml") as stream:
             for _event, element in ET.iterparse(stream, events=("end",)):
                 if element.tag.rsplit("}", 1)[-1] in {"p", "h"}:
-                    text = "".join(element.itertext()).strip()
+                    text = _odf_text(element).strip()
                     if text:
                         yield text
                     element.clear()
@@ -540,6 +564,23 @@ def _iter_odf_content_units(path: Path) -> Iterator[str]:
         raise RuntimeError(f"เปิด OpenDocument package ไม่สำเร็จ: {exc}") from exc
     except ET.ParseError as exc:
         raise RuntimeError(f"content.xml ไม่ถูกต้อง: {exc}") from exc
+
+
+def _odf_text(element: ET.Element) -> str:
+    """Keep encoded separators and nested tails; do not expand untrusted space counts."""
+    pieces: list[str] = []
+    stack: list[ET.Element | str] = [element]
+    separators = {"s": " ", "tab": "\t", "line-break": "\n"}
+    while stack:
+        item = stack.pop()
+        if isinstance(item, str):
+            pieces.append(item)
+            continue
+        pieces.append(separators.get(item.tag.rsplit("}", 1)[-1], item.text or ""))
+        for child in reversed(list(item)):
+            stack.append(child.tail or "")
+            stack.append(child)
+    return "".join(pieces)
 
 
 def _extract_spotlight_document(path: Path) -> str:

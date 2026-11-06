@@ -122,15 +122,13 @@ def vision_server_lease(*, required: bool):
             started_by_us = True
             if not _wait_for_server(client):
                 log.warning("OCR vision rewrite skipped: VLM did not become ready")
-                yield
-                return
         except Exception as exc:
             log.warning(
                 "OCR vision rewrite skipped: optional VLM control start failed: %s",
                 type(exc).__name__,
             )
-            yield
-            return
+        # Consumer exceptions must propagate to the caller, not be mistaken
+        # for a startup failure and cause this contextmanager to yield twice.
         yield
     finally:
         if started_by_us and config.OCR_REWRITE_AUTO_STOP:

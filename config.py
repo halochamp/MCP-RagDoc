@@ -6,8 +6,11 @@ no calling model can broaden those roots at runtime.
 """
 from __future__ import annotations
 
+import hashlib
 import ipaddress
 import os
+import re
+import socket
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -215,9 +218,29 @@ SEMANTIC_CHILD_OVERLAP_TOKENS = min(
         SEMANTIC_CHILD_TOKENS // 2,
     ),
 )
+SEMANTIC_THREADS = _env_int("RAGDOC_SEMANTIC_THREADS", 4, 1, 16)
 SEMANTIC_EMBED_BATCH = _env_int("RAGDOC_SEMANTIC_EMBED_BATCH", 16, 1, 64)
 SEMANTIC_SCAN_BATCH = _env_int("RAGDOC_SEMANTIC_SCAN_BATCH", 256, 32, 2048)
 SEMANTIC_CANDIDATES = _env_int("RAGDOC_SEMANTIC_CANDIDATES", 24, 4, 100)
+SEMANTIC_FULL_SCAN_LIMIT = _env_int("RAGDOC_SEMANTIC_FULL_SCAN_LIMIT", 20_000, 1_000, 1_000_000)
+SEMANTIC_ANN_CANDIDATES = _env_int("RAGDOC_SEMANTIC_ANN_CANDIDATES", 256, 64, 5_000)
+SEMANTIC_ANN_SIDECAR_SCHEMA = 2
+
+
+def semantic_ann_sidecar_dir(db_path: Path) -> Path:
+    """Return the machine/database-specific rebuildable ANN state directory."""
+    resolved = db_path.resolve()
+    machine = re.sub(r"[^A-Za-z0-9_.-]", "_", socket.gethostname())
+    stem = re.sub(r"[^A-Za-z0-9_.-]", "_", resolved.stem)[:48] or "ragdoc"
+    digest = hashlib.sha256(str(resolved).encode("utf-8")).hexdigest()[:16]
+    return resolved.parent / "ann" / machine / f"{stem}-{digest}"
+
+
+def semantic_ann_sidecar_paths(db_path: Path) -> tuple[Path, Path, Path]:
+    root = semantic_ann_sidecar_dir(db_path)
+    return root / "vectors.hnsw", root / "metadata.json", root / "state.json"
+
+
 SEMANTIC_TIMEOUT_SECONDS = _env_int("RAGDOC_SEMANTIC_TIMEOUT", 20, 5, 120)
 SEMANTIC_SYNC_TIMEOUT_SECONDS = _env_int("RAGDOC_SEMANTIC_SYNC_TIMEOUT", 600, 30, 3600)
 

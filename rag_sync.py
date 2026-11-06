@@ -51,7 +51,7 @@ _SECRET_SCAN_CHARS = 16 * 1024
 # Location metadata is persisted in every chunk. Bump this whenever the
 # extractor's page/line mapping changes so an older units snapshot is rebuilt
 # instead of being treated as unchanged.
-_KB_PIPELINE_VERSION = 7
+_KB_PIPELINE_VERSION = 8
 _OCR_ALT_CONFIDENCE_THRESHOLD = 0.85
 _OCR_ALT_MAX_CANDIDATES = 3
 
@@ -746,6 +746,19 @@ def _index_one(
             )
             chunk_count = 1
         _check_cancel(cancel_requested)
+        # Extraction may outlive a source edit or replacement. Publish only
+        # the snapshot whose fingerprint was supplied, otherwise roll back
+        # this document (including semantic invalidation) for the next sync.
+        from helpers.source_paths import visible_source_file
+        if not any(visible_source_file(path, root) is not None for root in _source_dirs()):
+            raise RuntimeError("source changed visibility during extraction")
+        final_stat = path.stat()
+        if (
+            final_stat.st_size != stat.st_size
+            or final_stat.st_mtime_ns != stat.st_mtime_ns
+            or _sha256(path) != raw_hash
+        ):
+            raise RuntimeError("source changed during extraction")
         conn.execute(
             "INSERT INTO kb_documents("
             "path, source_key, name, kind, suffix, size_bytes, mtime_ns, sha256, chunk_count, pipeline_version"
@@ -819,6 +832,9 @@ def sync_kb(
             chunk_count = 0
             file_completed = False
             try:
+                from helpers.source_paths import visible_source_file
+                if not any(visible_source_file(raw_path, root) is not None for root in _source_dirs()):
+                    raise _SensitiveDocument("source changed visibility after discovery")
                 if path_is_or_contains_secret(raw_path):
                     raise _SensitiveDocument("sensitive path/content")
                 raw_hash = _sha256(raw_path)

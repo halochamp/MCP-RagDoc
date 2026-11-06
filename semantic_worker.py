@@ -4,8 +4,9 @@ Modes:
 - sync: stream bounded semantic child windows from existing FTS parents,
   persist normalized float16 vectors in SQLite, and atomically publish one
   complete semantic generation.
-- query: require a ready matching generation, embed one query, stream vectors
-  from SQLite in bounded batches, and return top parent chunks by exact cosine.
+- query: require a ready matching generation, embed one query, use bounded
+  exact cosine for small indexes or HNSW child candidates plus exact parent
+  reranking for large indexes, then return top parent chunks.
 
 The process exits after each command so ONNX/SentencePiece/NumPy RAM is never
 resident in the long-lived Lite process.
@@ -21,6 +22,7 @@ from pathlib import Path
 import sqlite3
 import time
 
+import ann_index
 import config
 from helpers.thai_word_break import word_boundary_offsets
 
@@ -42,7 +44,7 @@ def _load_runtime(model_root: Path):
     import numpy as np
     import onnxruntime as ort
     so = ort.SessionOptions()
-    so.intra_op_num_threads = 1
+    so.intra_op_num_threads = config.SEMANTIC_THREADS
     so.inter_op_num_threads = 1
     so.enable_cpu_mem_arena = False
     so.enable_mem_pattern = False
@@ -165,6 +167,8 @@ def _decode_vector(np, blob):
         return None
     vector = np.frombuffer(blob, dtype="<f2").astype(np.float32, copy=False)
     if vector.size != config.SEMANTIC_DIM or not bool(np.isfinite(vector).all()):
+        return None
+    if float(np.linalg.norm(vector)) <= 1e-12:
         return None
     return vector
 
@@ -298,16 +302,20 @@ def sync(
                 for child_index, raw_ids, digest in _windows(sp, content, model_tag):
                     _check_cancel(cancel_file)
                     row = conn.execute(
-                        "SELECT model_tag,content_hash,length(embedding) FROM kb_semantic_chunks "
+                        "SELECT model_tag,content_hash,embedding FROM kb_semantic_chunks "
                         "WHERE path=? AND parent_chunk_index=? AND child_index=?",
                         (path, int(parent_index), child_index),
                     ).fetchone()
-                    if (
+                    reusable = (
                         row
                         and row[0] == model_tag
                         and row[1] == digest
-                        and int(row[2] or 0) == config.SEMANTIC_DIM * 2
-                    ):
+                    )
+                    if reusable:
+                        if np is None:
+                            import numpy as np
+                        reusable = _decode_vector(np, row[2]) is not None
+                    if reusable:
                         conn.execute(
                             "UPDATE kb_semantic_chunks SET generation=? "
                             "WHERE path=? AND parent_chunk_index=? AND child_index=?",
@@ -367,6 +375,29 @@ def sync(
                 "UPDATE kb_semantic_state SET generation=?,model_tag=?,ready=1,vector_count=? WHERE id=1",
                 (generation, model_tag, int(total)),
             )
+        ann = {
+            "status": "not_required",
+            "required": int(total) > config.SEMANTIC_FULL_SCAN_LIMIT,
+            "fresh": False,
+        }
+        if ann["required"]:
+            try:
+                ann = {
+                    **ann_index.build(db_path, cancel_file=cancel_file),
+                    "required": True,
+                }
+                _check_cancel(cancel_file)
+            except ann_index.AnnCancelled as exc:
+                raise SemanticCancelled(str(exc)) from exc
+            except SemanticCancelled:
+                raise
+            except (OSError, RuntimeError, sqlite3.Error, ValueError) as exc:
+                ann = {
+                    "status": "unavailable",
+                    "required": True,
+                    "fresh": False,
+                    "error": str(exc),
+                }
         return {
             "status": "ok",
             "generation": generation,
@@ -375,10 +406,19 @@ def sync(
             "reused": reused,
             "removed": max(0, int(deleted)),
             "vectors": int(total),
+            "ann": ann,
         }
     except SemanticCancelled:
-        # _begin_generation() already published ready=0.  Any rows stamped into
-        # this partial generation remain unusable until a later complete sync.
+        # Cancellation during semantic work already has ready=0 from
+        # _begin_generation(). Cancellation during the optional ANN build can
+        # happen after semantic publication, so restore the same fail-closed
+        # generation contract without deleting reusable rows.
+        with conn:
+            conn.execute(
+                "UPDATE kb_semantic_state SET ready=0,vector_count=0 "
+                "WHERE id=1 AND generation=? AND model_tag=?",
+                (generation, model_tag),
+            )
         return {
             "status": "cancelled",
             "generation": generation,
@@ -397,6 +437,139 @@ def _push_parent(heap, limit: int, path: str, parent_index: int, score: float) -
         heapq.heappush(heap, item)
     elif item > heap[0]:
         heapq.heapreplace(heap, item)
+
+
+def _score_vector(np, query_vec, blob) -> float | None:
+    vector = _decode_vector(np, blob)
+    if vector is None:
+        return None
+    norm = float(np.linalg.norm(vector))
+    if not np.isfinite(norm) or norm <= 1e-12:
+        return None
+    return float(np.dot(query_vec, vector) / norm)
+
+
+def _exact_parent_hits(
+    conn: sqlite3.Connection,
+    np,
+    query_vec,
+    model_tag: str,
+    generation: int,
+    limit: int,
+) -> tuple[list[dict[str, object]], int]:
+    cursor = conn.execute(
+        "SELECT path,parent_chunk_index,embedding FROM kb_semantic_chunks "
+        "WHERE model_tag=? AND generation=? "
+        "ORDER BY path,parent_chunk_index,child_index",
+        (model_tag, generation),
+    )
+    heap: list[tuple[float, str, int]] = []
+    current_key = None
+    current_best = -2.0
+    scanned_parents = 0
+    while True:
+        rows = cursor.fetchmany(config.SEMANTIC_SCAN_BATCH)
+        if not rows:
+            break
+        for path, parent_index, blob in rows:
+            key = (str(path), int(parent_index))
+            if current_key is not None and key != current_key:
+                _push_parent(heap, limit, current_key[0], current_key[1], current_best)
+                scanned_parents += 1
+                current_best = -2.0
+            current_key = key
+            score = _score_vector(np, query_vec, blob)
+            if score is not None and score > current_best:
+                current_best = score
+    if current_key is not None:
+        _push_parent(heap, limit, current_key[0], current_key[1], current_best)
+        scanned_parents += 1
+
+    hits = [
+        {"path": path, "parent_chunk_index": parent_index, "score": round(score, 7)}
+        for score, path, parent_index in sorted(heap, reverse=True)
+        if score > -2.0
+    ]
+    return hits, scanned_parents
+
+
+def _ann_parent_hits(
+    conn: sqlite3.Connection,
+    np,
+    query_vec,
+    db_path: Path,
+    model_tag: str,
+    generation: int,
+    vector_count: int,
+    limit: int,
+) -> tuple[list[dict[str, object]], int, str]:
+    ann_state = ann_index.status(db_path)
+    if not ann_state.get("available") or not ann_state.get("fresh"):
+        return [], 0, str(ann_state.get("status") or "unavailable")
+
+    parent_limit = min(
+        vector_count,
+        max(
+            limit,
+            min(config.SEMANTIC_ANN_CANDIDATES, limit * 4),
+        ),
+    )
+    try:
+        candidates = ann_index.query(
+            db_path,
+            [float(value) for value in query_vec],
+            parent_limit,
+        )
+    except (OSError, RuntimeError, sqlite3.Error, ValueError):
+        return [], 0, "unavailable"
+    if not candidates:
+        return [], 0, "unavailable"
+
+    parent_keys: list[tuple[str, int]] = []
+    seen: set[tuple[str, int]] = set()
+    for item in candidates:
+        try:
+            key = (str(item["path"]), int(item["parent_chunk_index"]))
+        except (KeyError, TypeError, ValueError):
+            continue
+        if key in seen:
+            continue
+        seen.add(key)
+        parent_keys.append(key)
+
+    best: dict[tuple[str, int], float] = {}
+    for offset in range(0, len(parent_keys), 150):
+        batch = parent_keys[offset : offset + 150]
+        clauses = " OR ".join(
+            "(path=? AND parent_chunk_index=?)"
+            for _ in batch
+        )
+        params: list[object] = [model_tag, generation]
+        for path, parent_index in batch:
+            params.extend((path, parent_index))
+        rows = conn.execute(
+            "SELECT path,parent_chunk_index,embedding FROM kb_semantic_chunks "
+            "WHERE model_tag=? AND generation=? AND (" + clauses + ") "
+            "ORDER BY path,parent_chunk_index,child_index",
+            params,
+        )
+        for path, parent_index, blob in rows:
+            key = (str(path), int(parent_index))
+            score = _score_vector(np, query_vec, blob)
+            if score is None:
+                continue
+            if score > best.get(key, -2.0):
+                best[key] = score
+
+    heap: list[tuple[float, str, int]] = []
+    for (path, parent_index), score in best.items():
+        _push_parent(heap, limit, path, parent_index, score)
+    hits = [
+        {"path": path, "parent_chunk_index": parent_index, "score": round(score, 7)}
+        for score, path, parent_index in sorted(heap, reverse=True)
+        if score > -2.0
+    ]
+    return hits, len(parent_keys), "ready"
 
 
 def query(db_path: Path, model_root: Path, text: str, limit: int) -> dict[str, object]:
@@ -418,64 +591,67 @@ def query(db_path: Path, model_root: Path, text: str, limit: int) -> dict[str, o
         if not state or int(state[2]) != 1 or state[1] != model_tag:
             return {"status": "unavailable", "reason": "semantic_generation_not_ready", "hits": []}
         generation = int(state[0])
-        if int(state[3]) <= 0:
-            return {"status": "ok", "generation": generation, "hits": [], "scanned_parents": 0}
+        vector_count = int(state[3])
+        if vector_count <= 0:
+            return {
+                "status": "ok",
+                "generation": generation,
+                "hits": [],
+                "scanned_parents": 0,
+                "retrieval_mode": "exact",
+            }
 
         sp = _load_tokenizer(model_root)
         raw = _query_raw(sp, text, 126)
         if not raw:
-            return {"status": "ok", "generation": generation, "hits": [], "scanned_parents": 0}
+            return {
+                "status": "ok",
+                "generation": generation,
+                "hits": [],
+                "scanned_parents": 0,
+                "retrieval_mode": (
+                    "exact"
+                    if vector_count <= config.SEMANTIC_FULL_SCAN_LIMIT
+                    else "ann"
+                ),
+            }
         np, session = _load_runtime(model_root)
         global _SP
         _SP = sp
         query_vec = _encode_raw_batches(np, session, [raw])[0]
 
-        cursor = conn.execute(
-            "SELECT path,parent_chunk_index,embedding FROM kb_semantic_chunks "
-            "WHERE model_tag=? AND generation=? "
-            "ORDER BY path,parent_chunk_index,child_index",
-            (model_tag, generation),
-        )
-        heap: list[tuple[float, str, int]] = []
-        current_key = None
-        current_best = -2.0
-        scanned_parents = 0
-        while True:
-            rows = cursor.fetchmany(config.SEMANTIC_SCAN_BATCH)
-            if not rows:
-                break
-            for path, parent_index, blob in rows:
-                key = (path, int(parent_index))
-                if current_key is not None and key != current_key:
-                    _push_parent(heap, limit, current_key[0], current_key[1], current_best)
-                    scanned_parents += 1
-                    current_best = -2.0
-                current_key = key
-                vector = _decode_vector(np, blob)
-                if vector is None:
-                    continue
-                norm = float(np.linalg.norm(vector))
-                if not np.isfinite(norm) or norm <= 1e-12:
-                    continue
-                score = float(np.dot(query_vec, vector) / norm)
-                if score > current_best:
-                    current_best = score
-        if current_key is not None:
-            _push_parent(heap, limit, current_key[0], current_key[1], current_best)
-            scanned_parents += 1
+        if vector_count <= config.SEMANTIC_FULL_SCAN_LIMIT:
+            hits, scanned_parents = _exact_parent_hits(
+                conn,
+                np,
+                query_vec,
+                model_tag,
+                generation,
+                limit,
+            )
+            retrieval_mode = "exact"
+            ann_state = "not_required"
+        else:
+            hits, scanned_parents, ann_state = _ann_parent_hits(
+                conn,
+                np,
+                query_vec,
+                db_path,
+                model_tag,
+                generation,
+                vector_count,
+                limit,
+            )
+            retrieval_mode = "ann"
 
-        top = sorted(heap, reverse=True)
-        hits = [
-            {"path": path, "parent_chunk_index": parent_index, "score": round(score, 7)}
-            for score, path, parent_index in top
-            if score > -2.0
-        ]
         return {
             "status": "ok",
             "generation": generation,
             "model_tag": model_tag,
             "hits": hits,
             "scanned_parents": scanned_parents,
+            "retrieval_mode": retrieval_mode,
+            "ann_status": ann_state,
         }
     finally:
         conn.close()

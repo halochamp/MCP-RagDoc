@@ -15,10 +15,12 @@ import threading
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse
+from starlette.concurrency import run_in_threadpool
 
 import config
 import rag_service
 from helpers.sensitive_paths import is_sensitive_path
+from helpers.source_paths import visible_source_file
 
 ROOT = Path(__file__).resolve().parent
 HTML_PATH = ROOT / "ui" / "rag.html"
@@ -88,7 +90,9 @@ def _health_payload() -> dict[str, object]:
 
 
 def _relative_source_path(path: str) -> str | None:
-    candidate = Path(path).expanduser().resolve(strict=False)
+    candidate = visible_source_file(path, config.KNOWLEDGE_DIR)
+    if candidate is None:
+        return None
     root = config.KNOWLEDGE_DIR.expanduser().resolve(strict=False)
     try:
         relative = candidate.relative_to(root)
@@ -137,10 +141,7 @@ def _file_rows(query: str = "", limit: int = 200) -> list[dict[str, object]]:
 
 
 def _openable_source_path(path: str) -> Path | None:
-    candidate = Path(path).expanduser().resolve(strict=False)
-    if _relative_source_path(str(candidate)) is None:
-        return None
-    return candidate
+    return visible_source_file(path, config.KNOWLEDGE_DIR)
 
 
 def _normalize_reveal_path(raw: str) -> str:
@@ -211,8 +212,10 @@ async def search(request: Request) -> dict[str, object]:
     if mode not in {"hybrid", "chunks", "files", "source_first"}:
         raise HTTPException(status_code=400, detail="invalid mode")
     try:
-        with _SEARCH_LOCK:
-            raw = _run_search(query, mode)
+        def execute():
+            with _SEARCH_LOCK:
+                return _run_search(query, mode)
+        raw = await run_in_threadpool(execute)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"search failed: {type(exc).__name__}") from None
     return {
@@ -241,7 +244,8 @@ async def open_file(request: Request) -> dict[str, object]:
     if sys.platform != "darwin":
         raise HTTPException(status_code=501, detail="Finder reveal requires macOS")
     try:
-        result = subprocess.run(
+        result = await run_in_threadpool(
+            subprocess.run,
             ["open", "-R", str(candidate)],
             capture_output=True,
             timeout=5,

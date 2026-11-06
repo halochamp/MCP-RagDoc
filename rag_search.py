@@ -16,7 +16,8 @@ from pathlib import Path
 
 import config
 import semantic_client
-from helpers.sensitive_paths import is_sensitive_path
+from helpers.sensitive_paths import is_sensitive_path, contains_secret_content, path_is_or_contains_secret
+from helpers.source_paths import visible_source_file
 from helpers.thai_text_normalize import normalize_extracted_text
 from helpers.thai_word_break import query_words
 
@@ -215,7 +216,7 @@ def _fallback_filename_search(
                     break
                 if needle in name.casefold():
                     candidate = current / name
-                    if not is_sensitive_path(candidate):
+                    if visible_source_file(candidate, root) is not None and not path_is_or_contains_secret(candidate):
                         matches.append(str(candidate))
                         if len(matches) >= 50:
                             break
@@ -279,7 +280,7 @@ def _project_content_fallback(query: str) -> str:
             path = current / name
             if path.suffix.casefold() != ".md":
                 continue
-            if path.is_symlink() or is_sensitive_path(path):
+            if visible_source_file(path, root) is None:
                 continue
             try:
                 if path.stat().st_size > 4 * 1024 * 1024:
@@ -290,6 +291,8 @@ def _project_content_fallback(query: str) -> str:
             if b"\x00" in raw:
                 continue
             text = raw.decode("utf-8", errors="replace")
+            if contains_secret_content(text):
+                continue
             normalized = unicodedata.normalize("NFC", text).casefold()
             hit = next((term for term in terms if term in normalized), None)
             if hit is None:
@@ -381,10 +384,8 @@ def _allowed_result_path(path: str) -> bool:
     # The index is incremental and iCloud/other sync tools can move or remove
     # a file between index builds. Never surface a stale row: the browser's
     # clickable-path action can only open a path that still exists.
-    try:
-        if not Path(path).is_file():
-            return False
-    except OSError:
+    from helpers.source_paths import visible_source_file
+    if not any(visible_source_file(path, root) is not None for root in _kb_source_roots()):
         return False
     return (
         not is_sensitive_path(path)
